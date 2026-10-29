@@ -2,29 +2,40 @@ package com.jessica.carlauncher;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ClipDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextClock;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Home screen for the QC4250 stereo: icon rail on the left, large centered clock and date. */
+/** Home screen for the QC4250 stereo: icon rail on the left, large centered clock and date, volume row. */
 public class MainActivity extends Activity {
 
     private static final int BG = Color.BLACK;
@@ -43,12 +54,26 @@ public class MainActivity extends Activity {
     private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
             R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
 
+    private static final int BUTTON = Color.parseColor("#1A1A1A");
+    private static final int TRACK = Color.parseColor("#333333");
+    private static final int STREAM = AudioManager.STREAM_MUSIC;
+
     private SharedPreferences prefs;
+    private AudioManager audio;
+    private SeekBar volumeBar;
+    private ImageView muteIcon;
+    private TextView volumeNumber;
+
+    /** Keeps the slider in step when volume changes elsewhere (steering wheel, knob, CarPlay). */
+    private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) { refreshVolume(); }
+    };
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.HORIZONTAL);
@@ -57,11 +82,24 @@ public class MainActivity extends Activity {
 
         LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rail, new LinearLayout.LayoutParams(dp(132), ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(rail, new LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.MATCH_PARENT));
         buildRail(rail);
 
         root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         setContentView(root);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        registerReceiver(volumeReceiver, new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
+        refreshVolume();
+    }
+
+    @Override
+    protected void onPause() {
+        try { unregisterReceiver(volumeReceiver); } catch (Exception ignored) { }
+        super.onPause();
     }
 
     @Override
@@ -86,10 +124,13 @@ public class MainActivity extends Activity {
             tile.setOnClickListener(v -> launch(tileComponent(idx), TILE_NAMES[idx]));
             tile.setOnLongClickListener(v -> { pickAppForTile(idx); return true; });
 
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
-            if (i > 0) lp.topMargin = dp(8);
+            // Equal gaps above, between and below the tiles.
+            rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(86), dp(86));
+            lp.gravity = Gravity.CENTER_HORIZONTAL;
             rail.addView(tile, lp);
         }
+        rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
     }
 
     private ComponentName tileComponent(int i) {
@@ -165,9 +206,129 @@ public class MainActivity extends Activity {
 
         col.addView(time);
         col.addView(date);
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(dp(820), dp(90));
+        vlp.topMargin = dp(56);
+        col.addView(buildVolumeRow(), vlp);
         // Long-press the clock for the menu (all apps, home app settings).
         col.setOnLongClickListener(v -> { showMenu(); return true; });
         return col;
+    }
+
+    // ---------- Volume ----------
+
+    private LinearLayout buildVolumeRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        FrameLayout mute = iconButton(R.drawable.ic_vol, "Mute");
+        muteIcon = (ImageView) mute.getChildAt(0);
+        mute.setOnClickListener(v -> toggleMute());
+        row.addView(mute);
+
+        FrameLayout minus = iconButton(R.drawable.ic_minus, "Volume down");
+        minus.setOnClickListener(v -> stepVolume(-1));
+        row.addView(minus);
+
+        volumeBar = new SeekBar(this);
+        volumeBar.setMax(audio.getStreamMaxVolume(STREAM));
+        volumeBar.setProgressDrawable(trackDrawable());
+        GradientDrawable thumb = new GradientDrawable();
+        thumb.setShape(GradientDrawable.OVAL);
+        thumb.setColor(TEXT);
+        thumb.setSize(dp(34), dp(34));
+        volumeBar.setThumb(thumb);
+        volumeBar.setSplitTrack(false);
+        volumeBar.setPadding(dp(26), 0, dp(26), 0);
+        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar b, int value, boolean fromUser) {
+                if (fromUser) { audio.setStreamVolume(STREAM, value, 0); showVolume(value); }
+            }
+            @Override public void onStartTrackingTouch(SeekBar b) { }
+            @Override public void onStopTrackingTouch(SeekBar b) { }
+        });
+        row.addView(volumeBar, new LinearLayout.LayoutParams(0, dp(90), 1));
+
+        FrameLayout plus = iconButton(R.drawable.ic_plus, "Volume up");
+        plus.setOnClickListener(v -> stepVolume(1));
+        row.addView(plus);
+
+        volumeNumber = new TextView(this);
+        volumeNumber.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        volumeNumber.setTextColor(MUTED);
+        volumeNumber.setGravity(Gravity.CENTER);
+        row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.MATCH_PARENT));
+        return row;
+    }
+
+    private FrameLayout iconButton(int icon, String desc) {
+        FrameLayout b = new FrameLayout(this);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(BUTTON);
+        bg.setCornerRadius(dp(20));
+        b.setBackground(bg);
+        b.setContentDescription(desc);
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        b.addView(iv, new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(90), dp(90));
+        lp.rightMargin = dp(12);
+        b.setLayoutParams(lp);
+        b.setOnTouchListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
+            else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
+            return false;
+        });
+        return b;
+    }
+
+    private Drawable trackDrawable() {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(TRACK);
+        bg.setCornerRadius(dp(6));
+        GradientDrawable fill = new GradientDrawable();
+        fill.setColor(TEXT);
+        fill.setCornerRadius(dp(6));
+        LayerDrawable layers = new LayerDrawable(new Drawable[]{bg, new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL)});
+        layers.setId(0, android.R.id.background);
+        layers.setId(1, android.R.id.progress);
+        for (int i = 0; i < 2; i++) {
+            layers.setLayerHeight(i, dp(12));
+            layers.setLayerGravity(i, Gravity.CENTER_VERTICAL);
+        }
+        return layers;
+    }
+
+    private void stepVolume(int delta) {
+        int max = audio.getStreamMaxVolume(STREAM);
+        // The stereo has 63 steps, so each tap moves 2 to make a noticeable change.
+        int step = max > 30 ? 2 : 1;
+        int v = Math.max(0, Math.min(max, audio.getStreamVolume(STREAM) + delta * step));
+        audio.setStreamVolume(STREAM, v, 0);
+        refreshVolume();
+    }
+
+    private void toggleMute() {
+        int now = audio.getStreamVolume(STREAM);
+        if (now > 0) {
+            prefs.edit().putInt("volume_before_mute", now).apply();
+            audio.setStreamVolume(STREAM, 0, 0);
+        } else {
+            audio.setStreamVolume(STREAM, Math.max(1, prefs.getInt("volume_before_mute", 8)), 0);
+        }
+        refreshVolume();
+    }
+
+    private void refreshVolume() {
+        if (volumeBar == null) return;
+        int v = audio.getStreamVolume(STREAM);
+        volumeBar.setProgress(v);
+        showVolume(v);
+    }
+
+    private void showVolume(int v) {
+        volumeNumber.setText(String.valueOf(v));
+        muteIcon.setImageResource(v == 0 ? R.drawable.ic_mute : R.drawable.ic_vol);
     }
 
     private void showMenu() {
