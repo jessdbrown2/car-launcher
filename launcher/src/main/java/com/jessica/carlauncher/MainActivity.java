@@ -72,7 +72,16 @@ public class MainActivity extends Activity {
     private static final String UPDATE_URL =
             "https://github.com/jessdbrown2/car-launcher/releases/download/launcher/launcher.apk";
 
+    /** Every rail tile, including All apps, is this size. */
+    private static final int RAIL_TILE = 100;
+    /** Volume bar hides this long after the last touch or volume change. */
+    private static final long VOLUME_HIDE_MS = 5000;
+
     private SharedPreferences prefs;
+    private LinearLayout volumeRow;
+    private boolean volumeShown;
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable hideVolumeLater = this::hideVolumeBar;
     private FrameLayout appsOverlay;
     private final ContentObserver headlampObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
         @Override public void onChange(boolean self) { applyHeadlightBrightness(); }
@@ -84,7 +93,7 @@ public class MainActivity extends Activity {
 
     /** Keeps the slider in step when volume changes elsewhere (steering wheel, knob, CarPlay). */
     private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { refreshVolume(); }
+        @Override public void onReceive(Context c, Intent i) { refreshVolume(); showVolumeBar(); }
     };
 
     @Override
@@ -100,7 +109,7 @@ public class MainActivity extends Activity {
 
         LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rail, new LinearLayout.LayoutParams(dp(124), ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(rail, new LinearLayout.LayoutParams(dp(116), ViewGroup.LayoutParams.MATCH_PARENT));
         buildRail(rail);
 
         root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
@@ -211,6 +220,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         try { unregisterReceiver(volumeReceiver); } catch (Exception ignored) { }
+        hideVolumeBar();
         super.onPause();
     }
 
@@ -244,7 +254,7 @@ public class MainActivity extends Activity {
 
             // Equal gaps above, between and below the tiles.
             rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(110), dp(110));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(RAIL_TILE), dp(RAIL_TILE));
             lp.gravity = Gravity.CENTER_HORIZONTAL;
             rail.addView(tile, lp);
         }
@@ -259,7 +269,7 @@ public class MainActivity extends Activity {
             return false;
         });
         apps.setOnClickListener(v -> showApps());
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(64), dp(64));
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(RAIL_TILE), dp(RAIL_TILE));
         alp.gravity = Gravity.CENTER_HORIZONTAL;
         rail.addView(apps, alp);
     }
@@ -312,11 +322,12 @@ public class MainActivity extends Activity {
 
     // ---------- Center: clock and date ----------
 
-    private LinearLayout buildClock() {
+    private FrameLayout buildClock() {
+        FrameLayout area = new FrameLayout(this);
+
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER_HORIZONTAL);
-        col.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
+        col.setGravity(Gravity.CENTER);
 
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
@@ -339,14 +350,49 @@ public class MainActivity extends Activity {
 
         col.addView(time);
         col.addView(date);
-        col.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
-        // Volume bar sits near the bottom edge.
-        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(dp(860), dp(90));
+        area.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Tap the clock area to show or hide the volume bar; long-press for the menu.
+        area.setOnClickListener(v -> { if (volumeShown) hideVolumeBar(); else showVolumeBar(); });
+        area.setOnLongClickListener(v -> { showMenu(); return true; });
+
+        volumeRow = buildVolumeRow();
+        FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(dp(860), dp(90),
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         vlp.bottomMargin = dp(18);
-        col.addView(buildVolumeRow(), vlp);
-        // Long-press the clock for the menu (all apps, home app settings).
-        col.setOnLongClickListener(v -> { showMenu(); return true; });
-        return col;
+        area.addView(volumeRow, vlp);
+        volumeRow.setVisibility(android.view.View.GONE);
+        return area;
+    }
+
+    private void showVolumeBar() {
+        if (volumeRow == null) return;
+        if (!volumeShown) {
+            volumeShown = true;
+            volumeRow.animate().cancel();
+            volumeRow.setAlpha(0f);
+            volumeRow.setTranslationY(dp(40));
+            volumeRow.setVisibility(android.view.View.VISIBLE);
+            volumeRow.animate().alpha(1f).translationY(0).setDuration(200).start();
+        }
+        keepVolumeBar();
+    }
+
+    /** Restarts the 5-second hide timer. Called on every volume touch. */
+    private void keepVolumeBar() {
+        ui.removeCallbacks(hideVolumeLater);
+        ui.postDelayed(hideVolumeLater, VOLUME_HIDE_MS);
+    }
+
+    private void hideVolumeBar() {
+        ui.removeCallbacks(hideVolumeLater);
+        if (volumeRow == null || !volumeShown) return;
+        volumeShown = false;
+        volumeRow.animate().cancel();
+        volumeRow.animate().alpha(0f).translationY(dp(40)).setDuration(200)
+                .withEndAction(() -> { if (!volumeShown) volumeRow.setVisibility(android.view.View.GONE); })
+                .start();
     }
 
     // ---------- Volume ----------
@@ -374,10 +420,10 @@ public class MainActivity extends Activity {
         volumeBar.setPadding(dp(26), 0, dp(26), 0);
         volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar b, int value, boolean fromUser) {
-                if (fromUser) { audio.setStreamVolume(STREAM, value, 0); showVolume(value); }
+                if (fromUser) { audio.setStreamVolume(STREAM, value, 0); showVolume(value); keepVolumeBar(); }
             }
-            @Override public void onStartTrackingTouch(SeekBar b) { }
-            @Override public void onStopTrackingTouch(SeekBar b) { }
+            @Override public void onStartTrackingTouch(SeekBar b) { ui.removeCallbacks(hideVolumeLater); }
+            @Override public void onStopTrackingTouch(SeekBar b) { keepVolumeBar(); }
         });
         row.addView(volumeBar, new LinearLayout.LayoutParams(0, dp(90), 1));
 
@@ -434,6 +480,7 @@ public class MainActivity extends Activity {
     }
 
     private void stepVolume(int delta) {
+        keepVolumeBar();
         int max = audio.getStreamMaxVolume(STREAM);
         // The stereo has 63 steps, so each tap moves 2 to make a noticeable change.
         int step = max > 30 ? 2 : 1;
@@ -443,6 +490,7 @@ public class MainActivity extends Activity {
     }
 
     private void toggleMute() {
+        keepVolumeBar();
         int now = audio.getStreamVolume(STREAM);
         if (now > 0) {
             prefs.edit().putInt("volume_before_mute", now).apply();
