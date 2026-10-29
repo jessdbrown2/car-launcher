@@ -3,46 +3,33 @@ package com.jessica.carlauncher;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.media.AudioManager;
-import android.media.session.MediaController;
-import android.media.session.MediaSessionManager;
-import android.media.session.PlaybackState;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.KeyEvent;
-import android.view.View;
+import android.view.MotionEvent;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Home screen for the QC4250 stereo: left app rail, big clock and date, CarPlay controls. */
+/** Home screen for the QC4250 stereo: icon rail on the left, large centered clock and date. */
 public class MainActivity extends Activity {
 
-    private static final int BG = Color.parseColor("#0B0B0B");
-    private static final int CARD = Color.parseColor("#1C1C1C");
-    private static final int ACCENT = Color.parseColor("#378ADD");
-    private static final int TEXT = Color.parseColor("#F1EFE8");
-    private static final int MUTED = Color.parseColor("#B4B2A9");
+    private static final int BG = Color.BLACK;
+    private static final int TEXT = Color.parseColor("#F5F5F5");
+    private static final int MUTED = Color.parseColor("#9A9A9A");
 
     /** Rail tiles, top to bottom: CarPlay, Radio, Phone switch, DSP/EQ, Car Settings. */
     private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Phone switch", "DSP / EQ", "Car Settings"};
@@ -56,19 +43,7 @@ public class MainActivity extends Activity {
     private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
             R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
 
-    private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
-    private LinearLayout rail;
-    private ImageView playIcon;
-    private boolean showingPause;
-
-    /** Checks once a second whether music is playing, so the middle button shows play or pause. */
-    private final Runnable stateLoop = new Runnable() {
-        @Override public void run() {
-            updatePlayIcon();
-            main.postDelayed(this, 1000);
-        }
-    };
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -80,35 +55,13 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(BG);
         root.setPadding(dp(12), dp(12), dp(12), dp(12));
 
-        rail = new LinearLayout(this);
+        LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rail, new LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT));
-        buildRail();
+        root.addView(rail, new LinearLayout.LayoutParams(dp(132), ViewGroup.LayoutParams.MATCH_PARENT));
+        buildRail(rail);
 
-        LinearLayout.LayoutParams centerLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
-        centerLp.leftMargin = dp(12);
-        root.addView(buildCenter(), centerLp);
-
+        root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         setContentView(root);
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        main.removeCallbacks(stateLoop);
-        main.post(stateLoop);
-    }
-
-    @Override
-    protected void onPause() {
-        main.removeCallbacks(stateLoop);
-        super.onPause();
-    }
-
-    @Override
-    protected void onDestroy() {
-        main.removeCallbacksAndMessages(null);
-        super.onDestroy();
     }
 
     @Override
@@ -116,26 +69,25 @@ public class MainActivity extends Activity {
 
     // ---------- Left rail ----------
 
-    private void buildRail() {
-        rail.removeAllViews();
+    private void buildRail(LinearLayout rail) {
         for (int i = 0; i < TILE_NAMES.length; i++) {
             final int idx = i;
-            FrameLayout tile = new FrameLayout(this);
-            tile.setBackground(rounded(CARD, dp(14)));
+            ImageView tile = new ImageView(this);
+            tile.setImageResource(TILE_ICONS[i]);
+            tile.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            tile.setAdjustViewBounds(false);
             tile.setContentDescription(TILE_NAMES[i]);
-
-            ImageView iv = new ImageView(this);
-            iv.setImageResource(TILE_ICONS[i]);
-            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            iv.setPadding(dp(4), dp(4), dp(4), dp(4));
-            tile.addView(iv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT));
-
+            // Dim slightly while pressed so taps feel responsive.
+            tile.setOnTouchListener((v, e) -> {
+                if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
+                else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
+                return false;
+            });
             tile.setOnClickListener(v -> launch(tileComponent(idx), TILE_NAMES[idx]));
             tile.setOnLongClickListener(v -> { pickAppForTile(idx); return true; });
 
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
-            if (i > 0) lp.topMargin = dp(10);
+            if (i > 0) lp.topMargin = dp(8);
             rail.addView(tile, lp);
         }
     }
@@ -169,10 +121,9 @@ public class MainActivity extends Activity {
                     if (which == 0) prefs.edit().remove("tile_" + idx).apply();
                     else {
                         ResolveInfo r = apps.get(which - 1);
-                        ComponentName cn = new ComponentName(r.activityInfo.packageName, r.activityInfo.name);
-                        prefs.edit().putString("tile_" + idx, cn.flattenToString()).apply();
+                        prefs.edit().putString("tile_" + idx,
+                                new ComponentName(r.activityInfo.packageName, r.activityInfo.name).flattenToString()).apply();
                     }
-                    buildRail();
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -187,151 +138,43 @@ public class MainActivity extends Activity {
         return list;
     }
 
-    // ---------- Center: clock, date, CarPlay controls ----------
+    // ---------- Center: clock and date ----------
 
-    private View buildCenter() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(rounded(CARD, dp(18)));
-        card.setPadding(dp(40), dp(24), dp(40), dp(16));
+    private LinearLayout buildClock() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
 
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout clockCol = new LinearLayout(this);
-        clockCol.setOrientation(LinearLayout.VERTICAL);
-        clockCol.setGravity(Gravity.CENTER_VERTICAL);
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
         time.setFormat24Hour("H:mm");
-        style(time, 170, TEXT, true);
+        time.setTextSize(TypedValue.COMPLEX_UNIT_SP, 200);
+        time.setTextColor(TEXT);
+        time.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         time.setIncludeFontPadding(false);
+        time.setGravity(Gravity.CENTER);
+
         TextClock date = new TextClock(this);
         date.setFormat12Hour("EEEE, MMMM d");
         date.setFormat24Hour("EEEE, MMMM d");
-        style(date, 32, MUTED, false);
+        date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        date.setTextColor(MUTED);
         date.setIncludeFontPadding(false);
-        date.setPadding(0, dp(6), 0, 0);
-        clockCol.addView(time);
-        clockCol.addView(date);
-        // Long-press the clock for the menu (all apps, music access, home app settings).
-        clockCol.setOnLongClickListener(v -> { showMenu(); return true; });
-        top.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        alignInk(time);
-        alignInk(date);
+        date.setGravity(Gravity.CENTER);
+        date.setPadding(0, dp(8), 0, 0);
 
-
-        card.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-
-        View divider = new View(this);
-        divider.setBackgroundColor(Color.parseColor("#333333"));
-        card.addView(divider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER);
-        controls.addView(controlButton(R.drawable.ic_prev, "Previous", KeyEvent.KEYCODE_MEDIA_PREVIOUS, TEXT));
-        View playBtn = controlButton(R.drawable.ic_play, "Play or pause", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, ACCENT);
-        playIcon = (ImageView) ((FrameLayout) playBtn).getChildAt(0);
-        controls.addView(playBtn);
-        controls.addView(controlButton(R.drawable.ic_next, "Next", KeyEvent.KEYCODE_MEDIA_NEXT, TEXT));
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
-        clp.topMargin = dp(10);
-        card.addView(controls, clp);
-        return card;
-    }
-
-    private View controlButton(int iconRes, String desc, int keyCode, int tint) {
-        FrameLayout b = new FrameLayout(this);
-        b.setBackground(rounded(Color.parseColor("#262626"), dp(16)));
-        b.setContentDescription(desc);
-        ImageView iv = new ImageView(this);
-        iv.setImageResource(iconRes);
-        iv.setColorFilter(tint);
-        b.addView(iv, new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
-        b.setOnClickListener(v -> {
-            sendMediaKey(keyCode);
-            main.postDelayed(this::updatePlayIcon, 400);
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(200), dp(130));
-        lp.leftMargin = dp(18);
-        lp.rightMargin = dp(18);
-        b.setLayoutParams(lp);
-        return b;
-    }
-
-    /** Sends the key to CarPlay's session if music access is on, otherwise to whatever app is playing. */
-    private void sendMediaKey(int code) {
-        long now = SystemClock.uptimeMillis();
-        KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0);
-        KeyEvent up = new KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0);
-        MediaController c = findController();
-        if (c != null) {
-            c.dispatchMediaButtonEvent(down);
-            c.dispatchMediaButtonEvent(up);
-        } else {
-            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            am.dispatchMediaKeyEvent(down);
-            am.dispatchMediaKeyEvent(up);
-        }
-    }
-
-    /** Pause icon only while music is playing; play icon otherwise. */
-    private void updatePlayIcon() {
-        if (playIcon == null) return;
-        boolean playing;
-        MediaController c = findController();
-        PlaybackState st = c != null ? c.getPlaybackState() : null;
-        if (st != null && st.getState() != PlaybackState.STATE_NONE) {
-            playing = st.getState() == PlaybackState.STATE_PLAYING || st.getState() == PlaybackState.STATE_BUFFERING;
-        } else {
-            // CarPlay often reports no state, so fall back to whether any audio is playing.
-            playing = ((AudioManager) getSystemService(Context.AUDIO_SERVICE)).isMusicActive();
-        }
-        if (playing != showingPause) {
-            showingPause = playing;
-            playIcon.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play);
-        }
-    }
-
-    /** Shifts text left by its first glyph's side bearing, so the big clock and the date share one left edge. */
-    private void alignInk(TextView t) {
-        Runnable fix = () -> {
-            CharSequence txt = t.getText();
-            if (txt.length() == 0) return;
-            android.graphics.Rect r = new android.graphics.Rect();
-            t.getPaint().getTextBounds(txt.toString(), 0, 1, r);
-            t.setTranslationX(-r.left);
-        };
-        t.addTextChangedListener(new android.text.TextWatcher() {
-            public void beforeTextChanged(CharSequence a, int b, int c, int d) { }
-            public void onTextChanged(CharSequence a, int b, int c, int d) { }
-            public void afterTextChanged(android.text.Editable e) { t.post(fix); }
-        });
-        t.post(fix);
-    }
-
-    private MediaController findController() {
-        try {
-            MediaSessionManager msm = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
-            List<MediaController> list = msm.getActiveSessions(new ComponentName(this, MediaListener.class));
-            for (MediaController c : list) if (c.getPackageName().equals("com.zjinnova.zlink")) return c;
-            return list.isEmpty() ? null : list.get(0);
-        } catch (SecurityException notGranted) {
-            return null;
-        }
+        col.addView(time);
+        col.addView(date);
+        // Long-press the clock for the menu (all apps, home app settings).
+        col.setOnLongClickListener(v -> { showMenu(); return true; });
+        return col;
     }
 
     private void showMenu() {
-        String[] items = {"All apps", "Music controls access", "Home app settings", "Android settings"};
+        String[] items = {"All apps", "Home app settings", "Android settings"};
         new AlertDialog.Builder(this).setTitle("Car Launcher").setItems(items, (d, which) -> {
-            switch (which) {
-                case 0: showAllApps(); break;
-                case 1: openSettings(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS); break;
-                case 2: openSettings(Settings.ACTION_HOME_SETTINGS); break;
-                default: openSettings(Settings.ACTION_SETTINGS);
-            }
+            if (which == 0) showAllApps();
+            else openSettings(which == 1 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
         }).setNegativeButton("Close", null).show();
     }
 
@@ -349,28 +192,6 @@ public class MainActivity extends Activity {
     private void openSettings(String action) {
         try { startActivity(new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
         catch (Exception e) { Toast.makeText(this, "This stereo doesn't have that screen.", Toast.LENGTH_SHORT).show(); }
-    }
-
-    // ---------- Helpers ----------
-
-    private TextView label(String text, int sp, int color) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        style(t, sp, color, false);
-        return t;
-    }
-
-    private void style(TextView t, int sp, int color, boolean bold) {
-        t.setTextSize(sp);
-        t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-    }
-
-    private GradientDrawable rounded(int color, int radius) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(color);
-        g.setCornerRadius(radius);
-        return g;
     }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
