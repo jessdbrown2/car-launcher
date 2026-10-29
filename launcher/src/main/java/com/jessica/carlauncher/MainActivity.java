@@ -27,7 +27,9 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
+import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -62,11 +64,16 @@ public class MainActivity extends Activity {
 
     /** Screen brightness (0-255) with headlights off and on. */
     private static final int DAY_BRIGHTNESS = 255;
-    private static final int NIGHT_BRIGHTNESS = 90;
+    private static final int DEFAULT_NIGHT_PERCENT = 35;
     /** The stereo sets this to 1 when the headlight wire is live. */
     private static final String HEADLAMP = "Headlamp";
 
+    /** Where GitHub publishes each new build. */
+    private static final String UPDATE_URL =
+            "https://github.com/jessdbrown2/car-launcher/releases/download/launcher/launcher.apk";
+
     private SharedPreferences prefs;
+    private FrameLayout appsOverlay;
     private final ContentObserver headlampObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
         @Override public void onChange(boolean self) { applyHeadlightBrightness(); }
     };
@@ -97,7 +104,12 @@ public class MainActivity extends Activity {
         buildRail(rail);
 
         root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        setContentView(root);
+        FrameLayout screen = new FrameLayout(this);
+        screen.addView(root);
+        appsOverlay = buildAppsOverlay();
+        appsOverlay.setVisibility(android.view.View.GONE);
+        screen.addView(appsOverlay);
+        setContentView(screen);
 
         getContentResolver().registerContentObserver(Settings.System.getUriFor(HEADLAMP), false, headlampObserver);
         if (!Settings.System.canWrite(this) && !prefs.getBoolean("asked_brightness", false)) {
@@ -127,8 +139,56 @@ public class MainActivity extends Activity {
             Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
                     Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
             Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS,
-                    lightsOn ? NIGHT_BRIGHTNESS : DAY_BRIGHTNESS);
+                    lightsOn ? nightLevel() : DAY_BRIGHTNESS);
         } catch (Exception ignored) { }
+    }
+
+    private int nightPercent() { return prefs.getInt("night_percent", DEFAULT_NIGHT_PERCENT); }
+
+    private int nightLevel() { return Math.max(5, Math.round(nightPercent() * 255f / 100f)); }
+
+    /** Slider for headlight brightness. Previews on screen while dragging, saves on Done. */
+    private void showNightBrightness() {
+        if (!Settings.System.canWrite(this)) { openBrightnessAccess(); return; }
+        final int before = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, DAY_BRIGHTNESS);
+        final TextView value = new TextView(this);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        value.setGravity(Gravity.CENTER);
+        value.setText(nightPercent() + "%");
+        final SeekBar bar = new SeekBar(this);
+        bar.setMax(95);
+        bar.setProgress(nightPercent() - 5);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar b, int p, boolean user) {
+                int pct = p + 5;
+                value.setText(pct + "%");
+                try {
+                    Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS,
+                            Math.round(pct * 255f / 100f));
+                } catch (Exception ignored) { }
+            }
+            @Override public void onStartTrackingTouch(SeekBar b) { }
+            @Override public void onStopTrackingTouch(SeekBar b) { }
+        });
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(32), dp(16), dp(32), dp(8));
+        box.addView(value);
+        box.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(70)));
+        new AlertDialog.Builder(this)
+                .setTitle("Brightness with headlights on")
+                .setView(box)
+                .setPositiveButton("Done", (d, w) -> {
+                    prefs.edit().putInt("night_percent", bar.getProgress() + 5).apply();
+                    applyHeadlightBrightness();
+                })
+                .setNegativeButton("Cancel", (d, w) -> {
+                    try {
+                        Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, before);
+                    } catch (Exception ignored) { }
+                    applyHeadlightBrightness();
+                })
+                .show();
     }
 
     private void openBrightnessAccess() {
@@ -155,7 +215,13 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onBackPressed() { /* Home screen: nothing to go back to. */ }
+    public void onBackPressed() { hideApps(); }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        hideApps(); // Home button closes the app grid
+    }
 
     // ---------- Left rail ----------
 
@@ -183,6 +249,19 @@ public class MainActivity extends Activity {
             rail.addView(tile, lp);
         }
         rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
+        ImageView apps = new ImageView(this);
+        apps.setImageResource(R.drawable.rail_apps);
+        apps.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        apps.setContentDescription("All apps");
+        apps.setOnTouchListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
+            else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
+            return false;
+        });
+        apps.setOnClickListener(v -> showApps());
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(64), dp(64));
+        alp.gravity = Gravity.CENTER_HORIZONTAL;
+        rail.addView(apps, alp);
     }
 
     private ComponentName tileComponent(int i) {
@@ -387,23 +466,91 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        String[] items = {"All apps", "Night dimming access", "Home app settings", "Android settings"};
-        new AlertDialog.Builder(this).setTitle("Car Launcher").setItems(items, (d, which) -> {
-            if (which == 0) showAllApps();
-            else if (which == 1) openBrightnessAccess();
-            else openSettings(which == 2 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
+        String[] items = {"All apps", "Update launcher", "Night brightness", "Home app settings", "Android settings"};
+        new AlertDialog.Builder(this).setTitle("Car Launcher " + versionName()).setItems(items, (d, which) -> {
+            if (which == 0) showApps();
+            else if (which == 1) openUpdate();
+            else if (which == 2) showNightBrightness();
+            else openSettings(which == 3 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
         }).setNegativeButton("Close", null).show();
     }
 
-    private void showAllApps() {
+    private String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Exception e) { return ""; }
+    }
+
+    /** Opens the latest build's download in Chrome; tap the downloaded file to install it. */
+    private void openUpdate() {
+        Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(UPDATE_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try { startActivity(new Intent(view).setPackage("com.android.chrome")); return; } catch (Exception ignored) { }
+        try { startActivity(view); }
+        catch (Exception e) { Toast.makeText(this, "No browser found.", Toast.LENGTH_SHORT).show(); }
+    }
+
+    // ---------- All apps grid ----------
+
+    private FrameLayout buildAppsOverlay() {
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(BG);
+        overlay.setClickable(true);
+        GridView grid = new GridView(this);
+        grid.setNumColumns(6);
+        grid.setVerticalSpacing(dp(18));
+        grid.setPadding(dp(24), dp(24), dp(110), dp(24));
+        grid.setClipToPadding(false);
+        grid.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        grid.setTag("grid");
+        overlay.addView(grid);
+        TextView close = new TextView(this);
+        close.setText("\u2715");
+        close.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        close.setTextColor(TEXT);
+        close.setGravity(Gravity.CENTER);
+        close.setContentDescription("Close");
+        close.setOnClickListener(v -> hideApps());
+        overlay.addView(close, new FrameLayout.LayoutParams(dp(90), dp(90), Gravity.TOP | Gravity.END));
+        return overlay;
+    }
+
+    private void showApps() {
         final List<ResolveInfo> apps = launchableApps();
-        PackageManager pm = getPackageManager();
-        String[] labels = new String[apps.size()];
-        for (int i = 0; i < apps.size(); i++) labels[i] = apps.get(i).loadLabel(pm).toString();
-        new AlertDialog.Builder(this).setTitle("All apps").setItems(labels, (d, which) -> {
-            ResolveInfo r = apps.get(which);
-            launch(new ComponentName(r.activityInfo.packageName, r.activityInfo.name), labels[which]);
-        }).setNegativeButton("Close", null).show();
+        final PackageManager pm = getPackageManager();
+        GridView grid = appsOverlay.findViewWithTag("grid");
+        grid.setAdapter(new BaseAdapter() {
+            @Override public int getCount() { return apps.size(); }
+            @Override public Object getItem(int i) { return apps.get(i); }
+            @Override public long getItemId(int i) { return i; }
+            @Override public android.view.View getView(int i, android.view.View old, ViewGroup parent) {
+                LinearLayout cell = new LinearLayout(MainActivity.this);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                cell.setPadding(0, dp(8), 0, dp(8));
+                ImageView iv = new ImageView(MainActivity.this);
+                iv.setImageDrawable(apps.get(i).loadIcon(pm));
+                cell.addView(iv, new LinearLayout.LayoutParams(dp(80), dp(80)));
+                TextView tv = new TextView(MainActivity.this);
+                tv.setText(apps.get(i).loadLabel(pm));
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                tv.setTextColor(MUTED);
+                tv.setGravity(Gravity.CENTER);
+                tv.setSingleLine(true);
+                tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                tv.setPadding(dp(6), dp(8), dp(6), 0);
+                cell.addView(tv);
+                return cell;
+            }
+        });
+        grid.setOnItemClickListener((p, v, i, id) -> {
+            ResolveInfo r = apps.get(i);
+            hideApps();
+            launch(new ComponentName(r.activityInfo.packageName, r.activityInfo.name), r.loadLabel(pm).toString());
+        });
+        appsOverlay.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void hideApps() {
+        if (appsOverlay != null) appsOverlay.setVisibility(android.view.View.GONE);
     }
 
     private void openSettings(String action) {
