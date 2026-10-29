@@ -10,11 +10,11 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioManager;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,23 +31,16 @@ import android.widget.TextClock;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Home screen for the QC4250 stereo: left app rail, big clock and weather, CarPlay controls. */
+/** Home screen for the QC4250 stereo: left app rail, big clock and date, CarPlay controls. */
 public class MainActivity extends Activity {
 
     private static final int BG = Color.parseColor("#0B0B0B");
     private static final int CARD = Color.parseColor("#1C1C1C");
     private static final int ACCENT = Color.parseColor("#378ADD");
-    private static final int ACCENT_DARK = Color.parseColor("#0C447C");
     private static final int TEXT = Color.parseColor("#F1EFE8");
     private static final int MUTED = Color.parseColor("#B4B2A9");
 
@@ -60,24 +53,20 @@ public class MainActivity extends Activity {
             "com.xyauto.dspSetting/com.xyauto.dspSetting.ui.MainActivity",
             "com.xyauto.Settings/com.xyauto.Settings.MainActivity"
     };
-    private static final int[] TILE_COLORS = {ACCENT, CARD, ACCENT_DARK, CARD, CARD};
-
-    // Valdosta, GA
-    private static final String WEATHER_URL = "https://api.open-meteo.com/v1/forecast?latitude=30.83&longitude=-83.28"
-            + "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min"
-            + "&temperature_unit=fahrenheit&timezone=America%2FNew_York&forecast_days=1";
-    private static final long WEATHER_EVERY_MS = 30 * 60 * 1000L;
+    private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
+            R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private LinearLayout rail;
-    private TextView tempView, weatherLine;
-    private long lastWeather = 0;
+    private ImageView playIcon;
+    private boolean showingPause;
 
-    private final Runnable weatherLoop = new Runnable() {
+    /** Checks once a second whether music is playing, so the middle button shows play or pause. */
+    private final Runnable stateLoop = new Runnable() {
         @Override public void run() {
-            fetchWeather();
-            main.postDelayed(this, WEATHER_EVERY_MS);
+            updatePlayIcon();
+            main.postDelayed(this, 1000);
         }
     };
 
@@ -106,11 +95,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        buildRail(); // picks up newly installed apps' icons
-        if (SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS || lastWeather == 0) {
-            main.removeCallbacks(weatherLoop);
-            main.post(weatherLoop);
-        }
+        main.removeCallbacks(stateLoop);
+        main.post(stateLoop);
+    }
+
+    @Override
+    protected void onPause() {
+        main.removeCallbacks(stateLoop);
+        super.onPause();
     }
 
     @Override
@@ -129,22 +121,15 @@ public class MainActivity extends Activity {
         for (int i = 0; i < TILE_NAMES.length; i++) {
             final int idx = i;
             FrameLayout tile = new FrameLayout(this);
-            tile.setBackground(rounded(TILE_COLORS[i], dp(14)));
+            tile.setBackground(rounded(CARD, dp(14)));
             tile.setContentDescription(TILE_NAMES[i]);
 
-            ComponentName cn = tileComponent(i);
-            Drawable icon = loadIcon(cn);
-            if (icon != null) {
-                ImageView iv = new ImageView(this);
-                iv.setImageDrawable(icon);
-                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                tile.addView(iv, new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
-            } else {
-                TextView tv = label(TILE_NAMES[i], 18, TEXT);
-                tv.setGravity(Gravity.CENTER);
-                tile.addView(tv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT));
-            }
+            ImageView iv = new ImageView(this);
+            iv.setImageResource(TILE_ICONS[i]);
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            iv.setPadding(dp(4), dp(4), dp(4), dp(4));
+            tile.addView(iv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
 
             tile.setOnClickListener(v -> launch(tileComponent(idx), TILE_NAMES[idx]));
             tile.setOnLongClickListener(v -> { pickAppForTile(idx); return true; });
@@ -159,13 +144,6 @@ public class MainActivity extends Activity {
         String s = prefs.getString("tile_" + i, TILE_DEFAULTS[i]);
         ComponentName cn = ComponentName.unflattenFromString(s);
         return cn != null ? cn : ComponentName.unflattenFromString(TILE_DEFAULTS[i]);
-    }
-
-    private Drawable loadIcon(ComponentName cn) {
-        PackageManager pm = getPackageManager();
-        try { return pm.getActivityIcon(cn); } catch (Exception ignored) { }
-        try { return pm.getApplicationIcon(cn.getPackageName()); } catch (Exception ignored) { }
-        return null;
     }
 
     private void launch(ComponentName cn, String name) {
@@ -209,7 +187,7 @@ public class MainActivity extends Activity {
         return list;
     }
 
-    // ---------- Center: clock, weather, CarPlay controls ----------
+    // ---------- Center: clock, date, CarPlay controls ----------
 
     private View buildCenter() {
         LinearLayout card = new LinearLayout(this);
@@ -223,6 +201,7 @@ public class MainActivity extends Activity {
 
         LinearLayout clockCol = new LinearLayout(this);
         clockCol.setOrientation(LinearLayout.VERTICAL);
+        clockCol.setGravity(Gravity.CENTER_VERTICAL);
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
         time.setFormat24Hour("H:mm");
@@ -232,23 +211,16 @@ public class MainActivity extends Activity {
         date.setFormat12Hour("EEEE, MMMM d");
         date.setFormat24Hour("EEEE, MMMM d");
         style(date, 32, MUTED, false);
+        date.setIncludeFontPadding(false);
+        date.setPadding(0, dp(6), 0, 0);
         clockCol.addView(time);
         clockCol.addView(date);
         // Long-press the clock for the menu (all apps, music access, home app settings).
         clockCol.setOnLongClickListener(v -> { showMenu(); return true; });
-        top.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        top.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        alignInk(time);
+        alignInk(date);
 
-        LinearLayout weatherCol = new LinearLayout(this);
-        weatherCol.setOrientation(LinearLayout.VERTICAL);
-        weatherCol.setGravity(Gravity.END);
-        tempView = label("--°", 84, TEXT);
-        tempView.setTypeface(Typeface.DEFAULT_BOLD);
-        weatherLine = label("Valdosta", 24, MUTED);
-        weatherLine.setGravity(Gravity.END);
-        weatherCol.addView(tempView);
-        weatherCol.addView(weatherLine);
-        weatherCol.setOnClickListener(v -> fetchWeather());
-        top.addView(weatherCol);
 
         card.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -260,7 +232,9 @@ public class MainActivity extends Activity {
         controls.setOrientation(LinearLayout.HORIZONTAL);
         controls.setGravity(Gravity.CENTER);
         controls.addView(controlButton(R.drawable.ic_prev, "Previous", KeyEvent.KEYCODE_MEDIA_PREVIOUS, TEXT));
-        controls.addView(controlButton(R.drawable.ic_playpause, "Play or pause", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, ACCENT));
+        View playBtn = controlButton(R.drawable.ic_play, "Play or pause", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, ACCENT);
+        playIcon = (ImageView) ((FrameLayout) playBtn).getChildAt(0);
+        controls.addView(playBtn);
         controls.addView(controlButton(R.drawable.ic_next, "Next", KeyEvent.KEYCODE_MEDIA_NEXT, TEXT));
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
         clp.topMargin = dp(10);
@@ -276,7 +250,10 @@ public class MainActivity extends Activity {
         iv.setImageResource(iconRes);
         iv.setColorFilter(tint);
         b.addView(iv, new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
-        b.setOnClickListener(v -> sendMediaKey(keyCode));
+        b.setOnClickListener(v -> {
+            sendMediaKey(keyCode);
+            main.postDelayed(this::updatePlayIcon, 400);
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(200), dp(130));
         lp.leftMargin = dp(18);
         lp.rightMargin = dp(18);
@@ -298,6 +275,41 @@ public class MainActivity extends Activity {
             am.dispatchMediaKeyEvent(down);
             am.dispatchMediaKeyEvent(up);
         }
+    }
+
+    /** Pause icon only while music is playing; play icon otherwise. */
+    private void updatePlayIcon() {
+        if (playIcon == null) return;
+        boolean playing;
+        MediaController c = findController();
+        PlaybackState st = c != null ? c.getPlaybackState() : null;
+        if (st != null && st.getState() != PlaybackState.STATE_NONE) {
+            playing = st.getState() == PlaybackState.STATE_PLAYING || st.getState() == PlaybackState.STATE_BUFFERING;
+        } else {
+            // CarPlay often reports no state, so fall back to whether any audio is playing.
+            playing = ((AudioManager) getSystemService(Context.AUDIO_SERVICE)).isMusicActive();
+        }
+        if (playing != showingPause) {
+            showingPause = playing;
+            playIcon.setImageResource(playing ? R.drawable.ic_pause : R.drawable.ic_play);
+        }
+    }
+
+    /** Shifts text left by its first glyph's side bearing, so the big clock and the date share one left edge. */
+    private void alignInk(TextView t) {
+        Runnable fix = () -> {
+            CharSequence txt = t.getText();
+            if (txt.length() == 0) return;
+            android.graphics.Rect r = new android.graphics.Rect();
+            t.getPaint().getTextBounds(txt.toString(), 0, 1, r);
+            t.setTranslationX(-r.left);
+        };
+        t.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence a, int b, int c, int d) { }
+            public void onTextChanged(CharSequence a, int b, int c, int d) { }
+            public void afterTextChanged(android.text.Editable e) { t.post(fix); }
+        });
+        t.post(fix);
     }
 
     private MediaController findController() {
@@ -337,55 +349,6 @@ public class MainActivity extends Activity {
     private void openSettings(String action) {
         try { startActivity(new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
         catch (Exception e) { Toast.makeText(this, "This stereo doesn't have that screen.", Toast.LENGTH_SHORT).show(); }
-    }
-
-    // ---------- Weather (Open-Meteo, no account) ----------
-
-    private void fetchWeather() {
-        new Thread(() -> {
-            try {
-                HttpURLConnection con = (HttpURLConnection) new URL(WEATHER_URL).openConnection();
-                con.setConnectTimeout(8000);
-                con.setReadTimeout(8000);
-                StringBuilder sb = new StringBuilder();
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(con.getInputStream()))) {
-                    String line;
-                    while ((line = r.readLine()) != null) sb.append(line);
-                }
-                JSONObject j = new JSONObject(sb.toString());
-                JSONObject cur = j.getJSONObject("current");
-                JSONObject daily = j.getJSONObject("daily");
-                final int temp = (int) Math.round(cur.getDouble("temperature_2m"));
-                final String cond = describe(cur.getInt("weather_code"));
-                final int hi = (int) Math.round(daily.getJSONArray("temperature_2m_max").getDouble(0));
-                final int lo = (int) Math.round(daily.getJSONArray("temperature_2m_min").getDouble(0));
-                main.post(() -> {
-                    lastWeather = SystemClock.elapsedRealtime();
-                    tempView.setText(temp + "°");
-                    weatherLine.setText(cond + "\nValdosta · H " + hi + "  L " + lo);
-                });
-            } catch (Exception e) {
-                main.post(() -> {
-                    if (lastWeather == 0) {
-                        tempView.setText("--°");
-                        weatherLine.setText("Weather offline\nValdosta");
-                    }
-                });
-            }
-        }).start();
-    }
-
-    private static String describe(int code) {
-        if (code == 0) return "Clear";
-        if (code <= 2) return "Partly cloudy";
-        if (code == 3) return "Cloudy";
-        if (code == 45 || code == 48) return "Fog";
-        if (code >= 51 && code <= 57) return "Drizzle";
-        if (code >= 61 && code <= 67) return "Rain";
-        if (code >= 71 && code <= 77) return "Snow";
-        if (code >= 80 && code <= 82) return "Showers";
-        if (code >= 95) return "Thunderstorms";
-        return "—";
     }
 
     // ---------- Helpers ----------
