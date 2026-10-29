@@ -1,0 +1,24 @@
+name: Build Launcher
+on:
+  push:
+    branches: [main]
+    paths: ['launcher/**', '*.gradle', 'gradle.properties', '.github/workflows/launcher.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.10.2' }
+      - run: gradle :launcher:assembleDebug --no-daemon
+      - name: Publish download link
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cp launcher/build/outputs/apk/debug/launcher-debug.apk launcher.apk
+          gh release delete launcher -y --cleanup-tag || true
+          gh release create launcher launcher.apk --title "Car Launcher" --notes "Open on the stereo and tap launcher.apk to install."

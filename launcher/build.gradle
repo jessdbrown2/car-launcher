@@ -1,0 +1,27 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.jessica.carlauncher'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.jessica.carlauncher'
+        minSdk 30
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+    signingConfigs {
+        // Fixed key so each new build installs over the previous one.
+        fixed {
+            storeFile file('signing.keystore')
+            storePassword 'carlauncher'
+            keyAlias 'launcher'
+            keyPassword 'carlauncher'
+        }
+    }
+    buildTypes { debug { signingConfig signingConfigs.fixed } }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
