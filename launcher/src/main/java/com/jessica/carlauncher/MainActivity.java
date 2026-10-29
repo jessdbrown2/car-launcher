@@ -9,6 +9,10 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -39,8 +43,8 @@ import java.util.List;
 public class MainActivity extends Activity {
 
     private static final int BG = Color.BLACK;
-    private static final int TEXT = Color.parseColor("#F5F5F5");
-    private static final int MUTED = Color.parseColor("#9A9A9A");
+    private static final int TEXT = Color.WHITE;
+    private static final int MUTED = Color.parseColor("#D0D0D0");
 
     /** Rail tiles, top to bottom: CarPlay, Radio, Phone switch, DSP/EQ, Car Settings. */
     private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Phone switch", "DSP / EQ", "Car Settings"};
@@ -54,11 +58,20 @@ public class MainActivity extends Activity {
     private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
             R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
 
-    private static final int BUTTON = Color.parseColor("#1A1A1A");
-    private static final int TRACK = Color.parseColor("#333333");
+    private static final int BUTTON = Color.parseColor("#2A2A2A");
+    private static final int TRACK = Color.parseColor("#555555");
     private static final int STREAM = AudioManager.STREAM_MUSIC;
 
+    /** Screen brightness (0-255) with headlights off and on. */
+    private static final int DAY_BRIGHTNESS = 255;
+    private static final int NIGHT_BRIGHTNESS = 90;
+    /** The stereo sets this to 1 when the headlight wire is live. */
+    private static final String HEADLAMP = "Headlamp";
+
     private SharedPreferences prefs;
+    private final ContentObserver headlampObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override public void onChange(boolean self) { applyHeadlightBrightness(); }
+    };
     private AudioManager audio;
     private SeekBar volumeBar;
     private ImageView muteIcon;
@@ -87,6 +100,46 @@ public class MainActivity extends Activity {
 
         root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         setContentView(root);
+
+        getContentResolver().registerContentObserver(Settings.System.getUriFor(HEADLAMP), false, headlampObserver);
+        if (!Settings.System.canWrite(this) && !prefs.getBoolean("asked_brightness", false)) {
+            prefs.edit().putBoolean("asked_brightness", true).apply();
+            new AlertDialog.Builder(this)
+                    .setTitle("Allow night dimming?")
+                    .setMessage("Car Launcher can dim the screen when your headlights are on and go back to full brightness when they're off. Turn on \"Modify system settings\" on the next screen.")
+                    .setPositiveButton("Open settings", (d, w) -> openBrightnessAccess())
+                    .setNegativeButton("Not now", null)
+                    .show();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        getContentResolver().unregisterContentObserver(headlampObserver);
+        super.onDestroy();
+    }
+
+    // ---------- Headlight dimming ----------
+
+    private void applyHeadlightBrightness() {
+        if (!Settings.System.canWrite(this)) return;
+        String lamp = Settings.System.getString(getContentResolver(), HEADLAMP);
+        boolean lightsOn = lamp != null && !lamp.trim().equals("0");
+        try {
+            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
+                    Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS,
+                    lightsOn ? NIGHT_BRIGHTNESS : DAY_BRIGHTNESS);
+        } catch (Exception ignored) { }
+    }
+
+    private void openBrightnessAccess() {
+        try {
+            startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            Toast.makeText(this, "This stereo doesn't have that screen.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
@@ -94,6 +147,7 @@ public class MainActivity extends Activity {
         super.onResume();
         registerReceiver(volumeReceiver, new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
         refreshVolume();
+        applyHeadlightBrightness();
     }
 
     @Override
@@ -191,7 +245,7 @@ public class MainActivity extends Activity {
         time.setFormat24Hour("H:mm");
         time.setTextSize(TypedValue.COMPLEX_UNIT_SP, 200);
         time.setTextColor(TEXT);
-        time.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        time.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         time.setIncludeFontPadding(false);
         time.setGravity(Gravity.CENTER);
 
@@ -200,6 +254,7 @@ public class MainActivity extends Activity {
         date.setFormat24Hour("EEEE, MMMM d");
         date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
         date.setTextColor(MUTED);
+        date.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         date.setIncludeFontPadding(false);
         date.setGravity(Gravity.CENTER);
         date.setPadding(0, dp(8), 0, 0);
@@ -255,7 +310,7 @@ public class MainActivity extends Activity {
 
         volumeNumber = new TextView(this);
         volumeNumber.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        volumeNumber.setTextColor(MUTED);
+        volumeNumber.setTextColor(TEXT);
         volumeNumber.setGravity(Gravity.CENTER);
         row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.MATCH_PARENT));
         return row;
@@ -332,10 +387,11 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        String[] items = {"All apps", "Home app settings", "Android settings"};
+        String[] items = {"All apps", "Night dimming access", "Home app settings", "Android settings"};
         new AlertDialog.Builder(this).setTitle("Car Launcher").setItems(items, (d, which) -> {
             if (which == 0) showAllApps();
-            else openSettings(which == 1 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
+            else if (which == 1) openBrightnessAccess();
+            else openSettings(which == 2 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
         }).setNegativeButton("Close", null).show();
     }
 
