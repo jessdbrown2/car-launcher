@@ -93,7 +93,7 @@ public class MainActivity extends Activity {
 
         LinearLayout rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rail, new LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(rail, new LinearLayout.LayoutParams(dp(124), ViewGroup.LayoutParams.MATCH_PARENT));
         buildRail(rail);
 
         root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
@@ -178,7 +178,7 @@ public class MainActivity extends Activity {
 
             // Equal gaps above, between and below the tiles.
             rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(86), dp(86));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(110), dp(110));
             lp.gravity = Gravity.CENTER_HORIZONTAL;
             rail.addView(tile, lp);
         }
