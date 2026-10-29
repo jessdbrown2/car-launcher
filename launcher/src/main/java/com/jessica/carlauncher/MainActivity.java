@@ -58,8 +58,6 @@ public class MainActivity extends Activity {
     private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
             R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
 
-    private static final int BUTTON = Color.parseColor("#2A2A2A");
-    private static final int TRACK = Color.parseColor("#555555");
     private static final int STREAM = AudioManager.STREAM_MUSIC;
 
     /** Screen brightness (0-255) with headlights off and on. */
@@ -238,7 +236,8 @@ public class MainActivity extends Activity {
     private LinearLayout buildClock() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
 
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
@@ -261,8 +260,10 @@ public class MainActivity extends Activity {
 
         col.addView(time);
         col.addView(date);
-        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(dp(820), dp(90));
-        vlp.topMargin = dp(56);
+        col.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
+        // Volume bar sits near the bottom edge.
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(dp(860), dp(90));
+        vlp.bottomMargin = dp(18);
         col.addView(buildVolumeRow(), vlp);
         // Long-press the clock for the menu (all apps, home app settings).
         col.setOnLongClickListener(v -> { showMenu(); return true; });
@@ -276,23 +277,20 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        FrameLayout mute = iconButton(R.drawable.ic_vol, "Mute");
+        FrameLayout mute = iconButton(R.drawable.vol_speaker, "Mute");
         muteIcon = (ImageView) mute.getChildAt(0);
         mute.setOnClickListener(v -> toggleMute());
         row.addView(mute);
 
-        FrameLayout minus = iconButton(R.drawable.ic_minus, "Volume down");
+        FrameLayout minus = iconButton(R.drawable.vol_minus, "Volume down");
         minus.setOnClickListener(v -> stepVolume(-1));
         row.addView(minus);
 
         volumeBar = new SeekBar(this);
         volumeBar.setMax(audio.getStreamMaxVolume(STREAM));
         volumeBar.setProgressDrawable(trackDrawable());
-        GradientDrawable thumb = new GradientDrawable();
-        thumb.setShape(GradientDrawable.OVAL);
-        thumb.setColor(TEXT);
-        thumb.setSize(dp(34), dp(34));
-        volumeBar.setThumb(thumb);
+        volumeBar.setThumb(getDrawable(R.drawable.vol_knob));
+        volumeBar.setThumbOffset(dp(23));
         volumeBar.setSplitTrack(false);
         volumeBar.setPadding(dp(26), 0, dp(26), 0);
         volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -304,28 +302,28 @@ public class MainActivity extends Activity {
         });
         row.addView(volumeBar, new LinearLayout.LayoutParams(0, dp(90), 1));
 
-        FrameLayout plus = iconButton(R.drawable.ic_plus, "Volume up");
+        FrameLayout plus = iconButton(R.drawable.vol_plus, "Volume up");
         plus.setOnClickListener(v -> stepVolume(1));
         row.addView(plus);
 
         volumeNumber = new TextView(this);
-        volumeNumber.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        volumeNumber.setTextColor(TEXT);
+        volumeNumber.setBackgroundResource(R.drawable.vol_tile);
+        volumeNumber.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        volumeNumber.setTextColor(Color.parseColor("#E4E4E8"));
+        volumeNumber.setTypeface(Typeface.DEFAULT_BOLD);
+        volumeNumber.setShadowLayer(dp(3), 0, dp(2), Color.BLACK);
         volumeNumber.setGravity(Gravity.CENTER);
-        row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.MATCH_PARENT));
+        row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(90), dp(90)));
         return row;
     }
 
     private FrameLayout iconButton(int icon, String desc) {
         FrameLayout b = new FrameLayout(this);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(BUTTON);
-        bg.setCornerRadius(dp(20));
-        b.setBackground(bg);
         b.setContentDescription(desc);
         ImageView iv = new ImageView(this);
         iv.setImageResource(icon);
-        b.addView(iv, new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER));
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        b.addView(iv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(90), dp(90));
         lp.rightMargin = dp(12);
         b.setLayoutParams(lp);
@@ -338,17 +336,19 @@ public class MainActivity extends Activity {
     }
 
     private Drawable trackDrawable() {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(TRACK);
-        bg.setCornerRadius(dp(6));
-        GradientDrawable fill = new GradientDrawable();
-        fill.setColor(TEXT);
-        fill.setCornerRadius(dp(6));
+        // Dark recessed groove with a brushed-silver fill, like the EQ icon.
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{Color.parseColor("#080809"), Color.parseColor("#2E2E32")});
+        bg.setCornerRadius(dp(9));
+        bg.setStroke(dp(1), Color.parseColor("#4E4E54"));
+        GradientDrawable fill = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{Color.parseColor("#F0F0F3"), Color.parseColor("#7D7D83")});
+        fill.setCornerRadius(dp(9));
         LayerDrawable layers = new LayerDrawable(new Drawable[]{bg, new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL)});
         layers.setId(0, android.R.id.background);
         layers.setId(1, android.R.id.progress);
         for (int i = 0; i < 2; i++) {
-            layers.setLayerHeight(i, dp(12));
+            layers.setLayerHeight(i, dp(18));
             layers.setLayerGravity(i, Gravity.CENTER_VERTICAL);
         }
         return layers;
@@ -383,7 +383,7 @@ public class MainActivity extends Activity {
 
     private void showVolume(int v) {
         volumeNumber.setText(String.valueOf(v));
-        muteIcon.setImageResource(v == 0 ? R.drawable.ic_mute : R.drawable.ic_vol);
+        muteIcon.setImageResource(v == 0 ? R.drawable.vol_mute : R.drawable.vol_speaker);
     }
 
     private void showMenu() {
