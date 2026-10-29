@@ -1,0 +1,24 @@
+name: Build Inspector
+on:
+  push:
+    branches: [main]
+    paths: ['inspector/**', '*.gradle', 'gradle.properties', '.github/workflows/inspector.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.10.2' }
+      - run: gradle :inspector:assembleDebug --no-daemon
+      - name: Publish download link
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cp inspector/build/outputs/apk/debug/inspector-debug.apk inspector.apk
+          gh release delete inspector -y --cleanup-tag || true
+          gh release create inspector inspector.apk --title "Car Inspector" --notes "Open on the stereo and tap inspector.apk to install."
