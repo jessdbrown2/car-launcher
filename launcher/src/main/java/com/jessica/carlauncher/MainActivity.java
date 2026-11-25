@@ -9,7 +9,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -62,11 +61,6 @@ public class MainActivity extends Activity {
 
     private static final int STREAM = AudioManager.STREAM_MUSIC;
 
-    /** Screen brightness (0-255) with headlights off and on. */
-    private static final int DAY_BRIGHTNESS = 255;
-    private static final int DEFAULT_NIGHT_PERCENT = 35;
-    /** The stereo sets this to 1 when the headlight wire is live. */
-    private static final String HEADLAMP = "Headlamp";
 
     /** Where GitHub publishes each new build. */
     private static final String UPDATE_URL =
@@ -83,9 +77,6 @@ public class MainActivity extends Activity {
     private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable hideVolumeLater = this::hideVolumeBar;
     private FrameLayout appsOverlay;
-    private final ContentObserver headlampObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
-        @Override public void onChange(boolean self) { applyHeadlightBrightness(); }
-    };
     private AudioManager audio;
     private SeekBar volumeBar;
     private ImageView muteIcon;
@@ -120,93 +111,11 @@ public class MainActivity extends Activity {
         screen.addView(appsOverlay);
         setContentView(screen);
 
-        getContentResolver().registerContentObserver(Settings.System.getUriFor(HEADLAMP), false, headlampObserver);
-        if (!Settings.System.canWrite(this) && !prefs.getBoolean("asked_brightness", false)) {
-            prefs.edit().putBoolean("asked_brightness", true).apply();
-            new AlertDialog.Builder(this)
-                    .setTitle("Allow night dimming?")
-                    .setMessage("Car Launcher can dim the screen when your headlights are on and go back to full brightness when they're off. Turn on \"Modify system settings\" on the next screen.")
-                    .setPositiveButton("Open settings", (d, w) -> openBrightnessAccess())
-                    .setNegativeButton("Not now", null)
-                    .show();
-        }
     }
 
     @Override
     protected void onDestroy() {
-        getContentResolver().unregisterContentObserver(headlampObserver);
         super.onDestroy();
-    }
-
-    // ---------- Headlight dimming ----------
-
-    private void applyHeadlightBrightness() {
-        if (!Settings.System.canWrite(this)) return;
-        String lamp = Settings.System.getString(getContentResolver(), HEADLAMP);
-        boolean lightsOn = lamp != null && !lamp.trim().equals("0");
-        try {
-            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
-                    Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
-            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS,
-                    lightsOn ? nightLevel() : DAY_BRIGHTNESS);
-        } catch (Exception ignored) { }
-    }
-
-    private int nightPercent() { return prefs.getInt("night_percent", DEFAULT_NIGHT_PERCENT); }
-
-    private int nightLevel() { return Math.max(5, Math.round(nightPercent() * 255f / 100f)); }
-
-    /** Slider for headlight brightness. Previews on screen while dragging, saves on Done. */
-    private void showNightBrightness() {
-        if (!Settings.System.canWrite(this)) { openBrightnessAccess(); return; }
-        final int before = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, DAY_BRIGHTNESS);
-        final TextView value = new TextView(this);
-        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        value.setGravity(Gravity.CENTER);
-        value.setText(nightPercent() + "%");
-        final SeekBar bar = new SeekBar(this);
-        bar.setMax(95);
-        bar.setProgress(nightPercent() - 5);
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar b, int p, boolean user) {
-                int pct = p + 5;
-                value.setText(pct + "%");
-                try {
-                    Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS,
-                            Math.round(pct * 255f / 100f));
-                } catch (Exception ignored) { }
-            }
-            @Override public void onStartTrackingTouch(SeekBar b) { }
-            @Override public void onStopTrackingTouch(SeekBar b) { }
-        });
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(32), dp(16), dp(32), dp(8));
-        box.addView(value);
-        box.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(70)));
-        new AlertDialog.Builder(this)
-                .setTitle("Brightness with headlights on")
-                .setView(box)
-                .setPositiveButton("Done", (d, w) -> {
-                    prefs.edit().putInt("night_percent", bar.getProgress() + 5).apply();
-                    applyHeadlightBrightness();
-                })
-                .setNegativeButton("Cancel", (d, w) -> {
-                    try {
-                        Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, before);
-                    } catch (Exception ignored) { }
-                    applyHeadlightBrightness();
-                })
-                .show();
-    }
-
-    private void openBrightnessAccess() {
-        try {
-            startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName()))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (Exception e) {
-            Toast.makeText(this, "This stereo doesn't have that screen.", Toast.LENGTH_SHORT).show();
-        }
     }
 
     @Override
@@ -214,7 +123,6 @@ public class MainActivity extends Activity {
         super.onResume();
         registerReceiver(volumeReceiver, new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
         refreshVolume();
-        applyHeadlightBrightness();
     }
 
     @Override
@@ -514,12 +422,11 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu() {
-        String[] items = {"All apps", "Update launcher", "Night brightness", "Home app settings", "Android settings"};
+        String[] items = {"All apps", "Update launcher", "Home app settings", "Android settings"};
         new AlertDialog.Builder(this).setTitle("Car Launcher " + versionName()).setItems(items, (d, which) -> {
             if (which == 0) showApps();
             else if (which == 1) openUpdate();
-            else if (which == 2) showNightBrightness();
-            else openSettings(which == 3 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
+            else openSettings(which == 2 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
         }).setNegativeButton("Close", null).show();
     }
 
