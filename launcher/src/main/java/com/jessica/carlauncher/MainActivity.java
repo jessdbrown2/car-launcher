@@ -10,21 +10,22 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
-import android.os.Handler;
-import android.os.Looper;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.ClipDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.LayerDrawable;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.MotionEvent;
+import android.view.View;
+import android.content.res.ColorStateList;
+import android.graphics.drawable.RippleDrawable;
+import android.widget.ScrollView;
+import android.widget.CheckBox;
+import java.util.HashSet;
+import java.util.Set;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
@@ -40,15 +41,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Home screen for the QC4250 stereo: icon rail on the left, large centered clock and date, volume row. */
+/** Driver-facing source controls for the QC4250 stereo. */
 public class MainActivity extends Activity {
 
     private static final int BG = Color.BLACK;
-    private static final int TEXT = Color.WHITE;
-    private static final int MUTED = Color.parseColor("#D0D0D0");
+    private static final int TEXT = 0xfff3f1ed;
+    private static final int MUTED = 0xffbfc0bf;
 
-    /** Rail tiles, top to bottom: CarPlay, Radio, Phone switch, DSP/EQ, Car Settings. */
-    private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Phone switch", "DSP / EQ", "Car Settings"};
+    /** Order also identifies existing saved shortcut preferences. */
+    private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Bluetooth", "Sound", "Car Settings"};
     private static final String[] TILE_DEFAULTS = {
             "com.zjinnova.zlink/com.zjinnova.android.zlink.features.launcher.CarPlayActivity",
             "com.acloud.stub.extradio/com.acloud.stub.extradio.QtActivity",
@@ -56,9 +57,13 @@ public class MainActivity extends Activity {
             "com.xyauto.dspSetting/com.xyauto.dspSetting.ui.MainActivity",
             "com.xyauto.Settings/com.xyauto.Settings.MainActivity"
     };
-    private static final int[] TILE_ICONS = {R.drawable.rail_carplay, R.drawable.rail_radio,
-            R.drawable.rail_bluetooth, R.drawable.rail_equalizer, R.drawable.rail_settings};
-
+    private static final int RED = 0xffd44745;
+    private static final int PANEL = 0xff191a1b;
+    private FrameLayout content;
+    private LinearLayout dock;
+    private boolean tracking;
+    private enum Page { HOME, APPS, SETTINGS, VISIBLE }
+    private Page page = Page.HOME;
     private static final int STREAM = AudioManager.STREAM_MUSIC;
 
 
@@ -66,8 +71,7 @@ public class MainActivity extends Activity {
     private static final String UPDATE_URL =
             "https://github.com/jessdbrown2/car-launcher/releases/download/launcher/launcher.apk";
 
-    /** Every rail tile, including All apps, is this size. */
-    private static final int RAIL_TILE = 100;
+
     /** Volume bar hides this long after the last touch or volume change. */
     private static final long VOLUME_HIDE_MS = 5000;
 
@@ -76,15 +80,18 @@ public class MainActivity extends Activity {
     private boolean volumeShown;
     private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable hideVolumeLater = this::hideVolumeBar;
-    private FrameLayout appsOverlay;
+
     private AudioManager audio;
     private SeekBar volumeBar;
-    private ImageView muteIcon;
+    private TextView muteIcon;
     private TextView volumeNumber;
 
     /** Keeps the slider in step when volume changes elsewhere (steering wheel, knob, CarPlay). */
     private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { refreshVolume(); showVolumeBar(); }
+        @Override public void onReceive(Context c, Intent i) { if (i.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", STREAM) == STREAM) {
+                refreshVolume();
+                showVolumeBar();
+            } }
     };
 
     @Override
@@ -94,28 +101,22 @@ public class MainActivity extends Activity {
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
         LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
+        root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
-        root.setPadding(dp(12), dp(12), dp(12), dp(12));
-
-        LinearLayout rail = new LinearLayout(this);
-        rail.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rail, new LinearLayout.LayoutParams(dp(116), ViewGroup.LayoutParams.MATCH_PARENT));
-        buildRail(rail);
-
-        root.addView(buildClock(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        FrameLayout screen = new FrameLayout(this);
-        screen.addView(root);
-        appsOverlay = buildAppsOverlay();
-        appsOverlay.setVisibility(android.view.View.GONE);
-        screen.addView(appsOverlay);
-        setContentView(screen);
-
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
+        FrameLayout stage = new FrameLayout(this);
+        content = new FrameLayout(this);
+        stage.addView(content);
+        volumeRow = buildVolumeRow();
+        volumeRow.setVisibility(View.GONE);
+        FrameLayout.LayoutParams panel = new FrameLayout.LayoutParams(-1, dp(88), Gravity.BOTTOM);
+        panel.setMargins(dp(24), 0, dp(24), dp(10));
+        stage.addView(volumeRow, panel);
+        root.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1));
+        dock = new LinearLayout(this);
+        dock.setBackgroundColor(PANEL);
+        root.addView(dock, new LinearLayout.LayoutParams(-1, dp(82)));
+        setContentView(root);
+        go(Page.HOME);
     }
 
     @Override
@@ -128,58 +129,106 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         try { unregisterReceiver(volumeReceiver); } catch (Exception ignored) { }
+        tracking = false;
         hideVolumeBar();
         super.onPause();
     }
 
     @Override
-    public void onBackPressed() { hideApps(); }
+    public void onBackPressed() {
+        if (volumeShown) hideVolumeBar();
+        else go(page == Page.VISIBLE ? Page.SETTINGS : Page.HOME);
+    }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        hideApps(); // Home button closes the app grid
+        go(Page.HOME);
     }
 
-    // ---------- Left rail ----------
+    private TextView label(String title, int size) {
+        TextView v = new TextView(this);
+        v.setText(title);
+        v.setTextColor(TEXT);
+        v.setTextSize(size);
+        v.setGravity(Gravity.CENTER_VERTICAL);
+        v.setIncludeFontPadding(false);
+        return v;
+    }
 
-    private void buildRail(LinearLayout rail) {
-        for (int i = 0; i < TILE_NAMES.length; i++) {
-            final int idx = i;
-            ImageView tile = new ImageView(this);
-            tile.setImageResource(TILE_ICONS[i]);
-            tile.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            tile.setAdjustViewBounds(false);
-            tile.setContentDescription(TILE_NAMES[i]);
-            // Dim slightly while pressed so taps feel responsive.
-            tile.setOnTouchListener((v, e) -> {
-                if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
-                else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
-                return false;
-            });
-            tile.setOnClickListener(v -> launch(tileComponent(idx), TILE_NAMES[idx]));
-            tile.setOnLongClickListener(v -> { pickAppForTile(idx); return true; });
+    private void action(View v, int color, Runnable task) {
+        v.setBackground(new RippleDrawable(ColorStateList.valueOf(0x66d44745),
+                new android.graphics.drawable.ColorDrawable(color), null));
+        v.setOnClickListener(clicked -> task.run());
+        v.setFocusable(true);
+    }
 
-            // Equal gaps above, between and below the tiles.
-            rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(RAIL_TILE), dp(RAIL_TILE));
-            lp.gravity = Gravity.CENTER_HORIZONTAL;
-            rail.addView(tile, lp);
-        }
-        rail.addView(new android.view.View(this), new LinearLayout.LayoutParams(1, 0, 1));
-        ImageView apps = new ImageView(this);
-        apps.setImageResource(R.drawable.rail_apps);
-        apps.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        apps.setContentDescription("All apps");
-        apps.setOnTouchListener((v, e) -> {
-            if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
-            else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
-            return false;
+    private LinearLayout command(String title, int icon, int size, boolean centered) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(dp(20), 0, dp(20), 0);
+        row.setGravity(centered ? Gravity.CENTER : Gravity.CENTER_VERTICAL);
+        ImageView glyph = new ImageView(this);
+        glyph.setImageResource(icon);
+        row.addView(glyph, new LinearLayout.LayoutParams(dp(size+4), dp(size+4)));
+        TextView name = label(title, size);
+        name.setPadding(dp(16), 0, 0, 0);
+        row.addView(name);
+        return row;
+    }
+
+    private void go(Page next) {
+        hideVolumeBar();
+        page = next;
+        content.removeAllViews();
+        if (page == Page.HOME) buildHome();
+        else if (page == Page.APPS) buildApps();
+        else buildSettings();
+        dock.removeAllViews();
+        dockItem("Volume", R.drawable.dash_volume, false, () -> {
+            if (volumeShown) hideVolumeBar(); else showVolumeBar();
         });
-        apps.setOnClickListener(v -> showApps());
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(RAIL_TILE), dp(RAIL_TILE));
-        alp.gravity = Gravity.CENTER_HORIZONTAL;
-        rail.addView(apps, alp);
+        dockItem("Sound", R.drawable.dash_sound, false, () -> launch(tileComponent(3), "Sound"))
+                .setOnLongClickListener(v -> { pickAppForTile(3); return true; });
+        dockItem("Settings", R.drawable.dash_settings, page == Page.SETTINGS || page == Page.VISIBLE,
+                () -> go(page == Page.SETTINGS ? Page.HOME : Page.SETTINGS));
+        dockItem("Apps", R.drawable.dash_apps, page == Page.APPS,
+                () -> go(page == Page.APPS ? Page.HOME : Page.APPS));
+    }
+
+    private View dockItem(String title, int icon, boolean active, Runnable task) {
+        LinearLayout item = command(title, icon, 24, true);
+        action(item, active ? 0xff303132 : PANEL, task);
+        item.setSelected(active);
+        dock.addView(item, new LinearLayout.LayoutParams(0, -1, 1));
+        return item;
+    }
+
+    private void buildHome() {
+        LinearLayout home = new LinearLayout(this);
+        home.setPadding(dp(32), dp(28), dp(24), dp(28));
+        home.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout sources = new LinearLayout(this);
+        sources.setOrientation(LinearLayout.VERTICAL);
+        int[] icons = {R.drawable.dash_carplay, R.drawable.dash_radio, R.drawable.dash_bluetooth};
+        for (int i = 0; i < icons.length; i++) {
+            final int idx = i;
+            LinearLayout source = command(TILE_NAMES[i], icons[i], 38, false);
+            source.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+            TextView arrow = label("›", 34);
+            arrow.setTextColor(MUTED);
+            source.addView(arrow);
+            action(source, BG, () -> launch(tileComponent(idx), TILE_NAMES[idx]));
+            source.setOnLongClickListener(v -> { pickAppForTile(idx); return true; });
+            sources.addView(source, new LinearLayout.LayoutParams(-1, dp(104)));
+            if (i < icons.length - 1) {
+                View divider = new View(this);
+                divider.setBackgroundColor(0xff343536);
+                sources.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+            }
+        }
+        home.addView(sources, new LinearLayout.LayoutParams(0, -2, 1.05f));
+        home.addView(buildClock(), new LinearLayout.LayoutParams(0, -1, 1));
+        content.addView(home);
     }
 
     private ComponentName tileComponent(int i) {
@@ -240,37 +289,33 @@ public class MainActivity extends Activity {
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
         time.setFormat24Hour("H:mm");
-        time.setTextSize(TypedValue.COMPLEX_UNIT_SP, 200);
+        time.setSingleLine(true);
+        time.setAutoSizeTextTypeUniformWithConfiguration(48, 145, 2, TypedValue.COMPLEX_UNIT_SP);
         time.setTextColor(TEXT);
-        time.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        time.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         time.setIncludeFontPadding(false);
         time.setGravity(Gravity.CENTER);
 
         TextClock date = new TextClock(this);
         date.setFormat12Hour("EEEE, MMMM d");
         date.setFormat24Hour("EEEE, MMMM d");
-        date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 27);
         date.setTextColor(MUTED);
         date.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         date.setIncludeFontPadding(false);
         date.setGravity(Gravity.CENTER);
         date.setPadding(0, dp(8), 0, 0);
 
-        col.addView(time);
+        col.addView(time, new LinearLayout.LayoutParams(-1, dp(164)));
         col.addView(date);
         area.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         // Tap the clock area to show or hide the volume bar; long-press for the menu.
         area.setOnClickListener(v -> { if (volumeShown) hideVolumeBar(); else showVolumeBar(); });
-        area.setOnLongClickListener(v -> { showMenu(); return true; });
+        area.setOnLongClickListener(v -> { go(Page.SETTINGS); return true; });
 
-        volumeRow = buildVolumeRow();
-        FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(dp(860), dp(90),
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        vlp.bottomMargin = dp(18);
-        area.addView(volumeRow, vlp);
-        volumeRow.setVisibility(android.view.View.GONE);
+
         return area;
     }
 
@@ -290,7 +335,7 @@ public class MainActivity extends Activity {
     /** Restarts the 5-second hide timer. Called on every volume touch. */
     private void keepVolumeBar() {
         ui.removeCallbacks(hideVolumeLater);
-        ui.postDelayed(hideVolumeLater, VOLUME_HIDE_MS);
+        if (!tracking) ui.postDelayed(hideVolumeLater, VOLUME_HIDE_MS);
     }
 
     private void hideVolumeBar() {
@@ -310,81 +355,38 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        FrameLayout mute = iconButton(R.drawable.vol_speaker, "Mute");
-        muteIcon = (ImageView) mute.getChildAt(0);
-        mute.setOnClickListener(v -> toggleMute());
-        row.addView(mute);
-
-        FrameLayout minus = iconButton(R.drawable.vol_minus, "Volume down");
-        minus.setOnClickListener(v -> stepVolume(-1));
-        row.addView(minus);
-
+        row.setBackgroundColor(0xff252628);
+        row.setPadding(dp(12), 0, dp(12), 0);
+        row.setClickable(true);
+        muteIcon = volumeButton(row, "Mute", this::toggleMute);
+        volumeButton(row, "−", () -> stepVolume(-1)).setContentDescription("Volume down");
         volumeBar = new SeekBar(this);
+        volumeBar.setContentDescription("Music volume");
         volumeBar.setMax(audio.getStreamMaxVolume(STREAM));
-        volumeBar.setProgressDrawable(trackDrawable());
-        volumeBar.setThumb(getDrawable(R.drawable.vol_knob));
-        volumeBar.setThumbOffset(dp(23));
-        volumeBar.setSplitTrack(false);
-        volumeBar.setPadding(dp(26), 0, dp(26), 0);
+        volumeBar.setThumbTintList(ColorStateList.valueOf(TEXT));
+        volumeBar.setProgressTintList(ColorStateList.valueOf(RED));
         volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar b, int value, boolean fromUser) {
                 if (fromUser) { audio.setStreamVolume(STREAM, value, 0); showVolume(value); keepVolumeBar(); }
             }
-            @Override public void onStartTrackingTouch(SeekBar b) { ui.removeCallbacks(hideVolumeLater); }
-            @Override public void onStopTrackingTouch(SeekBar b) { keepVolumeBar(); }
+            @Override public void onStartTrackingTouch(SeekBar b) { tracking = true; ui.removeCallbacks(hideVolumeLater); }
+            @Override public void onStopTrackingTouch(SeekBar b) { tracking = false; keepVolumeBar(); }
         });
         row.addView(volumeBar, new LinearLayout.LayoutParams(0, dp(90), 1));
 
-        FrameLayout plus = iconButton(R.drawable.vol_plus, "Volume up");
-        plus.setOnClickListener(v -> stepVolume(1));
-        row.addView(plus);
-
-        volumeNumber = new TextView(this);
-        volumeNumber.setBackgroundResource(R.drawable.vol_tile);
-        volumeNumber.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
-        volumeNumber.setTextColor(Color.parseColor("#E4E4E8"));
-        volumeNumber.setTypeface(Typeface.DEFAULT_BOLD);
-        volumeNumber.setShadowLayer(dp(3), 0, dp(2), Color.BLACK);
+        volumeButton(row, "+", () -> stepVolume(1)).setContentDescription("Volume up");
+        volumeNumber = label("", 32);
         volumeNumber.setGravity(Gravity.CENTER);
-        row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(90), dp(90)));
+        row.addView(volumeNumber, new LinearLayout.LayoutParams(dp(72), -1));
         return row;
     }
 
-    private FrameLayout iconButton(int icon, String desc) {
-        FrameLayout b = new FrameLayout(this);
-        b.setContentDescription(desc);
-        ImageView iv = new ImageView(this);
-        iv.setImageResource(icon);
-        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        b.addView(iv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(90), dp(90));
-        lp.rightMargin = dp(12);
-        b.setLayoutParams(lp);
-        b.setOnTouchListener((v, e) -> {
-            if (e.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
-            else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
-            return false;
-        });
-        return b;
-    }
-
-    private Drawable trackDrawable() {
-        // Dark recessed groove with a brushed-silver fill, like the EQ icon.
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{Color.parseColor("#080809"), Color.parseColor("#2E2E32")});
-        bg.setCornerRadius(dp(9));
-        bg.setStroke(dp(1), Color.parseColor("#4E4E54"));
-        GradientDrawable fill = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{Color.parseColor("#F0F0F3"), Color.parseColor("#7D7D83")});
-        fill.setCornerRadius(dp(9));
-        LayerDrawable layers = new LayerDrawable(new Drawable[]{bg, new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL)});
-        layers.setId(0, android.R.id.background);
-        layers.setId(1, android.R.id.progress);
-        for (int i = 0; i < 2; i++) {
-            layers.setLayerHeight(i, dp(18));
-            layers.setLayerGravity(i, Gravity.CENTER_VERTICAL);
-        }
-        return layers;
+    private TextView volumeButton(LinearLayout row, String title, Runnable task) {
+        TextView button = label(title, 26);
+        button.setGravity(Gravity.CENTER);
+        action(button, 0xff252628, task);
+        row.addView(button, new LinearLayout.LayoutParams(dp(104), -1));
+        return button;
     }
 
     private void stepVolume(int delta) {
@@ -418,17 +420,9 @@ public class MainActivity extends Activity {
 
     private void showVolume(int v) {
         volumeNumber.setText(String.valueOf(v));
-        muteIcon.setImageResource(v == 0 ? R.drawable.vol_mute : R.drawable.vol_speaker);
+        muteIcon.setText(v == 0 ? "Unmute" : "Mute");
     }
 
-    private void showMenu() {
-        String[] items = {"All apps", "Update launcher", "Home app settings", "Android settings"};
-        new AlertDialog.Builder(this).setTitle("Car Launcher " + versionName()).setItems(items, (d, which) -> {
-            if (which == 0) showApps();
-            else if (which == 1) openUpdate();
-            else openSettings(which == 2 ? Settings.ACTION_HOME_SETTINGS : Settings.ACTION_SETTINGS);
-        }).setNegativeButton("Close", null).show();
-    }
 
     private String versionName() {
         try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
@@ -443,69 +437,108 @@ public class MainActivity extends Activity {
         catch (Exception e) { Toast.makeText(this, "No browser found.", Toast.LENGTH_SHORT).show(); }
     }
 
-    // ---------- All apps grid ----------
-
-    private FrameLayout buildAppsOverlay() {
-        FrameLayout overlay = new FrameLayout(this);
-        overlay.setBackgroundColor(BG);
-        overlay.setClickable(true);
-        GridView grid = new GridView(this);
-        grid.setNumColumns(6);
-        grid.setVerticalSpacing(dp(18));
-        grid.setPadding(dp(24), dp(24), dp(110), dp(24));
-        grid.setClipToPadding(false);
-        grid.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-        grid.setTag("grid");
-        overlay.addView(grid);
-        TextView close = new TextView(this);
-        close.setText("\u2715");
-        close.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
-        close.setTextColor(TEXT);
-        close.setGravity(Gravity.CENTER);
-        close.setContentDescription("Close");
-        close.setOnClickListener(v -> hideApps());
-        overlay.addView(close, new FrameLayout.LayoutParams(dp(90), dp(90), Gravity.TOP | Gravity.END));
-        return overlay;
+    private LinearLayout pageList(String title) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setPadding(dp(32), dp(12), dp(32), dp(12));
+        panel.setOrientation(LinearLayout.VERTICAL);
+        content.addView(panel);
+        TextView back = label("‹   " + title, 32);
+        back.setContentDescription("Back from " + title);
+        action(back, BG, this::onBackPressed);
+        panel.addView(back, new LinearLayout.LayoutParams(-1, dp(70)));
+        ScrollView scroll = new ScrollView(this);
+        panel.addView(scroll);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows);
+        return rows;
     }
 
-    private void showApps() {
-        final List<ResolveInfo> apps = launchableApps();
-        final PackageManager pm = getPackageManager();
-        GridView grid = appsOverlay.findViewWithTag("grid");
-        grid.setAdapter(new BaseAdapter() {
-            @Override public int getCount() { return apps.size(); }
-            @Override public Object getItem(int i) { return apps.get(i); }
-            @Override public long getItemId(int i) { return i; }
-            @Override public android.view.View getView(int i, android.view.View old, ViewGroup parent) {
-                LinearLayout cell = new LinearLayout(MainActivity.this);
-                cell.setOrientation(LinearLayout.VERTICAL);
-                cell.setGravity(Gravity.CENTER_HORIZONTAL);
-                cell.setPadding(0, dp(8), 0, dp(8));
-                ImageView iv = new ImageView(MainActivity.this);
-                iv.setImageDrawable(apps.get(i).loadIcon(pm));
-                cell.addView(iv, new LinearLayout.LayoutParams(dp(80), dp(80)));
-                TextView tv = new TextView(MainActivity.this);
-                tv.setText(apps.get(i).loadLabel(pm));
-                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-                tv.setTextColor(MUTED);
-                tv.setGravity(Gravity.CENTER);
-                tv.setSingleLine(true);
-                tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                tv.setPadding(dp(6), dp(8), dp(6), 0);
-                cell.addView(tv);
-                return cell;
+    private void item(LinearLayout rows, String title, Runnable task) {
+        TextView v = label(title, 24);
+        v.setPadding(dp(20), 0, dp(20), 0);
+        action(v, PANEL, task);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(64));
+        lp.bottomMargin = dp(2);
+        rows.addView(v, lp);
+    }
+
+    private String key(ResolveInfo app) {
+        return new ComponentName(app.activityInfo.packageName, app.activityInfo.name).flattenToString();
+    }
+
+    private Set<String> visibleApps(List<ResolveInfo> apps) {
+        if (prefs.contains("visible_apps")) {
+            return new HashSet<>(prefs.getStringSet("visible_apps", Collections.emptySet()));
+        }
+        Set<String> result = new HashSet<>();
+        for (ResolveInfo app : apps) {
+            String pkg = app.activityInfo.packageName;
+            String name = app.loadLabel(getPackageManager()).toString();
+            if (pkg.equals("com.android.chrome") || pkg.equals("com.android.vending") ||
+                    name.equalsIgnoreCase("Files")) result.add(key(app));
+        }
+        return result;
+    }
+
+    private void buildApps() {
+        LinearLayout rows = pageList("Apps");
+        List<ResolveInfo> apps = launchableApps();
+        Set<String> visible = visibleApps(apps);
+        LinearLayout line = null;
+        int count = 0;
+        for (ResolveInfo app : apps) {
+            if (!visible.contains(key(app))) continue;
+            if (count % 3 == 0) {
+                line = new LinearLayout(this);
+                line.setWeightSum(3);
+                rows.addView(line);
             }
-        });
-        grid.setOnItemClickListener((p, v, i, id) -> {
-            ResolveInfo r = apps.get(i);
-            hideApps();
-            launch(new ComponentName(r.activityInfo.packageName, r.activityInfo.name), r.loadLabel(pm).toString());
-        });
-        appsOverlay.setVisibility(android.view.View.VISIBLE);
+            String name = app.loadLabel(getPackageManager()).toString();
+            TextView tile = label(name, 25);
+            tile.setGravity(Gravity.CENTER);
+            action(tile, PANEL, () -> launch(ComponentName.unflattenFromString(key(app)), name));
+            LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, dp(110), 1);
+            cell.setMargins(dp(3), dp(3), dp(3), dp(3));
+            line.addView(tile, cell);
+            count++;
+        }
+        if (count == 0) item(rows, "Choose apps to show", () -> go(Page.VISIBLE));
     }
 
-    private void hideApps() {
-        if (appsOverlay != null) appsOverlay.setVisibility(android.view.View.GONE);
+    private void buildSettings() {
+        if (page == Page.VISIBLE) {
+            LinearLayout rows = pageList("Visible apps");
+            List<ResolveInfo> apps = launchableApps();
+            Set<String> selected = visibleApps(apps);
+            for (ResolveInfo app : apps) {
+                String id = key(app);
+                CheckBox check = new CheckBox(this);
+                check.setText(app.loadLabel(getPackageManager()));
+                check.setTextColor(TEXT);
+                check.setTextSize(22);
+                check.setButtonTintList(ColorStateList.valueOf(MUTED));
+                check.setChecked(selected.contains(id));
+                check.setOnCheckedChangeListener((button, checked) -> {
+                    if (checked) selected.add(id); else selected.remove(id);
+                    prefs.edit().putStringSet("visible_apps", new HashSet<>(selected)).apply();
+                });
+                rows.addView(check, new LinearLayout.LayoutParams(-1, dp(60)));
+            }
+            return;
+        }
+        LinearLayout rows = pageList("Settings");
+        item(rows, "Car settings", () -> launch(tileComponent(4), TILE_NAMES[4]));
+        rows.getChildAt(0).setOnLongClickListener(v -> { pickAppForTile(4); return true; });
+        item(rows, "Manage visible apps", () -> go(Page.VISIBLE));
+        item(rows, "Update launcher   ·   " + versionName(), this::openUpdate);
+        item(rows, "Diagnostics", () -> {
+            Intent inspector = getPackageManager().getLaunchIntentForPackage("com.jessica.carinspector");
+            if (inspector == null) Toast.makeText(this, "Car Inspector is unavailable.", Toast.LENGTH_SHORT).show();
+            else startActivity(inspector);
+        });
+        item(rows, "Default home app", () -> openSettings(Settings.ACTION_HOME_SETTINGS));
+        item(rows, "Android settings", () -> openSettings(Settings.ACTION_SETTINGS));
     }
 
     private void openSettings(String action) {
