@@ -49,7 +49,7 @@ public class MainActivity extends Activity {
     private static final int MUTED = 0xffbfc0bf;
 
     /** Order also identifies existing saved shortcut preferences. */
-    private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Bluetooth", "Sound", "Car Settings"};
+    private static final String[] TILE_NAMES = {"CarPlay", "Radio", "Connect", "Sound", "Car Settings"};
     private static final String[] TILE_DEFAULTS = {
             "com.zjinnova.zlink/com.zjinnova.android.zlink.features.launcher.CarPlayActivity",
             "com.acloud.stub.extradio/com.acloud.stub.extradio.QtActivity",
@@ -178,6 +178,7 @@ public class MainActivity extends Activity {
 
     private void go(Page next) {
         hideVolumeBar();
+        if (next == Page.HOME && page == Page.HOME && content.getChildCount() > 0) return;
         page = next;
         content.removeAllViews();
         if (page == Page.HOME) buildHome();
